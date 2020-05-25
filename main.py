@@ -75,8 +75,9 @@ def _get_now_in_millis():
     return int(pd.Timestamp.today().timestamp()*1000)
 
 
-join = dict()
-wrong_groups = dict()
+groups = dict()
+junctions = dict()
+intersections = dict()
 
 for date in pd.date_range(start=BABY_BDAY, end=pd.Timestamp.today(tz=TZ), tz=TZ, normalize=True, closed='left'):
     try:
@@ -124,57 +125,116 @@ for date in pd.date_range(start=BABY_BDAY, end=pd.Timestamp.today(tz=TZ), tz=TZ,
         ))
         for daily_nap_of_yesterday in daily_naps_of_yesterday:
             try:
-                join[daily_nap_of_yesterday] = list(filter(
+                if daily_nap_of_yesterday.group_uid != NAP_UID:
+                    groups[daily_nap_of_yesterday] = NAP_UID
+                intersections[daily_nap_of_yesterday] = list(filter(
+                    lambda nap:
+                    nap.start_millis > daily_nap_of_yesterday.start_millis and
+                    nap.end_millis <= daily_nap_of_yesterday.end_millis and
+                    (nap.pause_millis > 0 or nap.group_uid != ''),
+                    daily_naps_of_yesterday
+                ))[0]
+                if intersections[daily_nap_of_yesterday].group_uid != '':
+                    groups[intersections[daily_nap_of_yesterday]] = ''
+            except IndexError:
+                pass
+
+            try:
+                junctions[daily_nap_of_yesterday] = list(filter(
                     lambda nap:
                     nap.start_millis > daily_nap_of_yesterday.end_millis and
                     _convert_millis_to_minutes(
                         nap.start_millis - daily_nap_of_yesterday.end_millis) <= MAX_NAP_INTERVAL,
                     daily_naps_of_yesterday
                 ))[0]
-                if join[daily_nap_of_yesterday].group_uid != "":
-                    wrong_groups[join[daily_nap_of_yesterday]] = ""
-                if daily_nap_of_yesterday.group_uid != NAP_UID:
-                    wrong_groups[daily_nap_of_yesterday] = NAP_UID
+                if junctions[daily_nap_of_yesterday].group_uid != '':
+                    groups[junctions[daily_nap_of_yesterday]] = ''
             except IndexError:
-                continue
+                pass
+
         for night_sleep_of_last_night in night_sleeps_of_last_night:
             try:
-                join[night_sleep_of_last_night] = list(filter(
+                if night_sleep_of_last_night.group_uid != SLEEP_UID:
+                    groups[night_sleep_of_last_night] = SLEEP_UID
+                intersections[night_sleep_of_last_night] = list(filter(
+                    lambda sleep:
+                    sleep.start_millis > night_sleep_of_last_night.start_millis and
+                    sleep.end_millis <= night_sleep_of_last_night.end_millis and
+                    (sleep.pause_millis > 0 or sleep.group_uid != ''),
+                    night_sleeps_of_last_night
+                ))[0]
+                if intersections[night_sleep_of_last_night].group_uid != '':
+                    groups[intersections[night_sleep_of_last_night]] = ''
+            except IndexError:
+                pass
+
+            try:
+                junctions[night_sleep_of_last_night] = list(filter(
                     lambda sleep:
                     sleep.start_millis > night_sleep_of_last_night.end_millis and
                     _convert_millis_to_minutes(
                         sleep.start_millis - night_sleep_of_last_night.end_millis) <= MAX_SLEEP_INTERVAL,
                     night_sleeps_of_last_night
                 ))[0]
-                if join[night_sleep_of_last_night].group_uid != "":
-                    wrong_groups[join[night_sleep_of_last_night]] = ""
-                if night_sleep_of_last_night.group_uid != SLEEP_UID:
-                    wrong_groups[night_sleep_of_last_night] = SLEEP_UID
+                if junctions[night_sleep_of_last_night].group_uid != '':
+                    groups[junctions[night_sleep_of_last_night]] = ''
             except IndexError:
-                continue
+                pass
     except IndexError:
         continue
 
 print('-'*100)
+print('Transferindo interrupções para dormida principal')
+print('-'*100)
+for sleep, internal in intersections.items():
+    print(' Inicial:', _calc_interval(sleep), 'intervalo (min)',
+          _convert_millis_to_minutes(sleep.pause_millis), '+')
+    print(' Interna:', _calc_interval(internal), 'intervalo (min)',
+          _convert_millis_to_minutes(internal.pause_millis), '=')
+
+    sleep.pause_millis += internal.pause_millis
+    sleep.updated_millis = _get_now_in_millis()
+
+    print('   Final:', _calc_interval(sleep), 'intervalo (min)',
+          _convert_millis_to_minutes(sleep.pause_millis))
+    print('-'*3)
+
+print('-'*100)
+print('Removendo pausas das interseções')
+print('-'*100)
+for sleep in intersections.values():
+    print(' Antes:', _calc_interval(sleep), 'intervalo (min)',
+          _convert_millis_to_minutes(sleep.pause_millis))
+
+    sleep.pause_millis = 0
+    sleep.updated_millis = _get_now_in_millis()
+
+    print('Depois:', _calc_interval(sleep), 'intervalo (min)',
+          _convert_millis_to_minutes(sleep.pause_millis))
+    print('-'*3)
+
+print('-'*100)
 print('Correção de grupos')
 print('-'*100)
-for sleep, group_uid in wrong_groups.items():
-    sleep.group_uid = group_uid
-    sleep.updated_millis = _get_now_in_millis()
-    print(_calc_interval(sleep), 'mudará o grupo para', "\"" + group_uid + "\"")
+for sleep, group_uid in groups.items():
+    if sleep.group_uid != group_uid:
+        print(sleep.uid, _calc_interval(sleep), 'grupo atual', '\"' + sleep.group_uid + '\"', 'mudará o grupo para',
+              '\"' + group_uid + '\"')
+        sleep.group_uid = group_uid
+        sleep.updated_millis = _get_now_in_millis()
 
 print('-'*100)
 print('Correção de gaps')
 print('-'*100)
-for sleep, gap in join.items():
-    print(" Antes:", _calc_interval(sleep), "Intervalo (min)",
+for sleep, gap in junctions.items():
+    print(' Antes:', _calc_interval(sleep), 'intervalo (min)',
           _convert_millis_to_minutes(sleep.pause_millis))
     pause_millis = _convert_millis_to_minutes(
         gap.start_millis - sleep.end_millis) * 60 * 1000
     sleep.end_millis = gap.end_millis
     sleep.pause_millis += pause_millis + gap.pause_millis
     sleep.updated_millis = _get_now_in_millis()
-    print("Depois:", _calc_interval(sleep), "Intervalo (min)",
+    print('Depois:', _calc_interval(sleep), 'intervalo (min)',
           _convert_millis_to_minutes(sleep.pause_millis))
     print('-'*3)
 
@@ -183,4 +243,4 @@ for sleep, gap in join.items():
 session.close()
 
 with engine.connect() as connection:
-    connection.execute("VACUUM")
+    connection.execute('VACUUM')
